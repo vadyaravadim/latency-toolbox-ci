@@ -35,6 +35,14 @@ Lint also fails unless every call of this repo in the caller's workflows pins th
 pin - move it by hand: to the final release when it ships, and once `windows-latest` itself ships that
 version, on to the next preview, or drop the leg if there is none.
 
+**PSScriptAnalyzer and Pester come from their PowerShell Gallery packages, checked against a pinned SHA512
+and imported by path - never `Install-Module`.** One script does it: the `run:` of "Get PSScriptAnalyzer" is
+the YAML anchor `get_gallery_module` and "Get Pester" is its alias, so the anchored step must stay above the
+alias. Each Get step holds `MODULE_VERSION` and `MODULE_SHA512`: bump both, the hash copied verbatim from the
+Gallery's `PackageHash` (`https://www.powershellgallery.com/api/v2/Packages(Id='<name>',Version='X.Y.Z')`).
+Importing by path is what puts the pinned version ahead of Pester 3.4.0 (built into 5.1) and the runner
+image's own copies; `Install-Module Pester` cost the 5.1 leg a median 106 s per run.
+
 **The ruleset "main" of this repo and of each script repo requires `ci / psanalyzer`, `ci / ascii`,
 `ci / pester (5.1)` and `ci / pester (runner)` from GitHub Actions before `main` moves.** A commit made on
 `main` itself is rejected; a branch whose `ci` passed and that is up to date with `main` can be merged, a

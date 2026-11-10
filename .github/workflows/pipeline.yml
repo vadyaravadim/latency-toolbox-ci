@@ -6,6 +6,7 @@ on:
         required: false
 env:
   CENTRAL_DIR: central
+  GALLERY_PACKAGES: https://www.powershellgallery.com/api/v2/package
 jobs:
   psanalyzer:
     permissions:
@@ -15,13 +16,24 @@ jobs:
       PSSA_SETTINGS: PSScriptAnalyzerSettings.psd1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Run PSScriptAnalyzer
+      - name: Get PSScriptAnalyzer
         shell: pwsh
         env:
-          PSSA_VERSION: '1.25.0'
+          MODULE_NAME: PSScriptAnalyzer
+          MODULE_VERSION: '1.25.0'
+          MODULE_SHA512: '5/tXMmLmBLqymRSuYpIdJLl8L4i1GbQSd7QD72zhY/FLfRs23HNEmmjlrlqNlQKJGxDCZBMf0YE63ym/ExwWYw=='
+        run: &get_gallery_module |
+          $zip = Join-Path $env:RUNNER_TEMP "$env:MODULE_NAME.$env:MODULE_VERSION.zip"
+          Invoke-WebRequest "$env:GALLERY_PACKAGES/$env:MODULE_NAME/$env:MODULE_VERSION" -OutFile $zip
+          $sha512 = [Convert]::ToBase64String([Convert]::FromHexString((Get-FileHash $zip -Algorithm SHA512).Hash))
+          if ($sha512 -cne $env:MODULE_SHA512) { throw "sha512 mismatch for $zip" }
+          $dir = Join-Path $env:RUNNER_TEMP $env:MODULE_NAME
+          Expand-Archive $zip $dir
+          "MODULE_PSD1=$(Join-Path $dir "$env:MODULE_NAME.psd1")" >> $env:GITHUB_ENV
+      - name: Run PSScriptAnalyzer
+        shell: pwsh
         run: |
-          Install-Module PSScriptAnalyzer -RequiredVersion $env:PSSA_VERSION -Force -Scope CurrentUser
-          Import-Module PSScriptAnalyzer -RequiredVersion $env:PSSA_VERSION
+          Import-Module $env:MODULE_PSD1
           $issues = Invoke-ScriptAnalyzer -Path . -Recurse -Settings "./$env:PSSA_SETTINGS"
           $issues | Format-Table Severity, RuleName, ScriptName, Line, Message -AutoSize -Wrap
           foreach ($i in $issues) {
@@ -118,12 +130,17 @@ jobs:
               $exe = Join-Path $dir 'pwsh.exe'
           }
           "PS_EXE=$exe" >> $env:GITHUB_ENV
-      - name: Run Pester under PowerShell ${{ matrix.ps }}
+      - name: Get Pester
         if: steps.tests.outputs.count != '0'
         env:
-          PESTER_VERSION: '5.7.1'
+          MODULE_NAME: Pester
+          MODULE_VERSION: '5.7.1'
+          MODULE_SHA512: 'TZlqSN2UgW0mtOnmk1ro5sy8Gfg5DqOCY0XxIeHOKufM4WNptRfBkM6tBev/AxI/gmarvTVWBK3V8SnCTc8oAg=='
+        run: *get_gallery_module
+      - name: Run Pester under PowerShell ${{ matrix.ps }}
+        if: steps.tests.outputs.count != '0'
         run: |
-          & $env:PS_EXE -NoProfile -ExecutionPolicy Bypass -Command '$PSVersionTable.PSVersion.ToString(); Install-Module Pester -RequiredVersion $env:PESTER_VERSION -Force -Scope CurrentUser -SkipPublisherCheck; Import-Module Pester -RequiredVersion $env:PESTER_VERSION; Invoke-Pester -Path . -CI'
+          & $env:PS_EXE -NoProfile -ExecutionPolicy Bypass -Command '$PSVersionTable.PSVersion.ToString(); "Pester " + (Import-Module $env:MODULE_PSD1 -PassThru).Version; Invoke-Pester -Path . -CI'
           exit $LASTEXITCODE
   release:
     needs: [psanalyzer, ascii, pester]
