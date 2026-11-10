@@ -134,8 +134,8 @@ jobs:
         if: steps.tests.outputs.count != '0'
         env:
           MODULE_NAME: Pester
-          MODULE_VERSION: '5.7.1'
-          MODULE_SHA512: 'TZlqSN2UgW0mtOnmk1ro5sy8Gfg5DqOCY0XxIeHOKufM4WNptRfBkM6tBev/AxI/gmarvTVWBK3V8SnCTc8oAg=='
+          MODULE_VERSION: '5.9.1'
+          MODULE_SHA512: 'Ro5dZIKb89GI4ljjInQc3m6sI74uvph1y4QAqBPZ1Jhg0l1wBv8rT0izkGKbOw2Brzn8rNV2NKpDbyvoi7ARqg=='
         run: *get_gallery_module
       - name: Run Pester under PowerShell ${{ matrix.ps }}
         if: steps.tests.outputs.count != '0'
