@@ -24,7 +24,7 @@ jobs:
           MODULE_SHA512: '5/tXMmLmBLqymRSuYpIdJLl8L4i1GbQSd7QD72zhY/FLfRs23HNEmmjlrlqNlQKJGxDCZBMf0YE63ym/ExwWYw=='
         run: &get_gallery_module |
           $zip = Join-Path $env:RUNNER_TEMP "$env:MODULE_NAME.$env:MODULE_VERSION.zip"
-          Invoke-WebRequest "$env:GALLERY_PACKAGES/$env:MODULE_NAME/$env:MODULE_VERSION" -OutFile $zip
+          Invoke-WebRequest "$env:GALLERY_PACKAGES/$env:MODULE_NAME/$env:MODULE_VERSION" -OutFile $zip -MaximumRetryCount 3 -RetryIntervalSec 20 -Verbose
           $sha512 = [Convert]::ToBase64String([Convert]::FromHexString((Get-FileHash $zip -Algorithm SHA512).Hash))
           if ($sha512 -cne $env:MODULE_SHA512) { throw "sha512 mismatch for $zip" }
           $dir = Join-Path $env:RUNNER_TEMP $env:MODULE_NAME
