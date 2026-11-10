@@ -174,8 +174,11 @@ jobs:
             echo "::error::$TAG already points at $TAGGED, not at $GITHUB_SHA. If $VERSION is released, add a new $CHANGELOG section; a hand-pushed tag burns the version - release the next one."
             exit 1
           fi
-          if gh release view "$TAG" > /dev/null 2>&1; then
+          if VIEW=$(gh release view "$TAG" 2>&1); then
             echo "::error::$TAG already has a GitHub release. If it is a draft left by a cancelled run, delete it and re-run; otherwise add a new $CHANGELOG section."
+            exit 1
+          elif [ "$VIEW" != "release not found" ]; then
+            echo "::error::Could not check whether $TAG has a GitHub release: $VIEW"
             exit 1
           fi
       - name: Extract release notes from CHANGELOG
