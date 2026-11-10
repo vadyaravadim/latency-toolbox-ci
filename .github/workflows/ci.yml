@@ -1,0 +1,9 @@
+name: ci
+on:
+  push:
+  pull_request:
+jobs:
+  ci:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/pipeline.yml

@@ -1,0 +1,230 @@
+name: pipeline
+on:
+  workflow_call:
+    secrets:
+      NUGET_API_KEY:
+        required: false
+env:
+  CENTRAL_DIR: central
+jobs:
+  psanalyzer:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    env:
+      PSSA_SETTINGS: PSScriptAnalyzerSettings.psd1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Run PSScriptAnalyzer
+        shell: pwsh
+        env:
+          PSSA_VERSION: '1.25.0'
+        run: |
+          Install-Module PSScriptAnalyzer -RequiredVersion $env:PSSA_VERSION -Force -Scope CurrentUser
+          Import-Module PSScriptAnalyzer -RequiredVersion $env:PSSA_VERSION
+          $issues = Invoke-ScriptAnalyzer -Path . -Recurse -Settings "./$env:PSSA_SETTINGS"
+          $issues | Format-Table Severity, RuleName, ScriptName, Line, Message -AutoSize -Wrap
+          foreach ($i in $issues) {
+              $lvl = if ($i.Severity -eq 'Error') { 'error' } else { 'warning' }
+              "::$lvl file=$($i.ScriptName),line=$($i.Line)::[$($i.RuleName)] $($i.Message)"
+          }
+          if ($issues) { throw "PSScriptAnalyzer found $($issues.Count) issue(s)" }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: ${{ env.CENTRAL_DIR }}
+      - name: Compare the PSScriptAnalyzer settings with the family file
+        env:
+          CENTRAL_REPO: ${{ job.workflow_repository }}
+          CENTRAL_SHA: ${{ job.workflow_sha }}
+        run: |
+          if ! cmp "$PSSA_SETTINGS" "$CENTRAL_DIR/$PSSA_SETTINGS"; then
+            echo "::error::$PSSA_SETTINGS differs from the family file in $CENTRAL_REPO at $CENTRAL_SHA: copy that file here unchanged."
+            exit 1
+          fi
+      - name: Check every call of the pipeline pins this commit
+        env:
+          CENTRAL_REPO: ${{ job.workflow_repository }}
+          CENTRAL_SHA: ${{ job.workflow_sha }}
+        run: |
+          for ref in $(grep -rhoE "$CENTRAL_REPO/\.github/workflows/[^@[:space:]]+@[^[:space:]]+" .github/workflows | sed 's/.*@//' | sort -u); do
+            if [ "$ref" != "$CENTRAL_SHA" ]; then
+              echo "::error::A workflow here calls $CENTRAL_REPO at '$ref', this run uses $CENTRAL_SHA: pin ci.yml and release.yml to the same full SHA."
+              exit 1
+            fi
+          done
+  ascii:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: |
+          bad=$(perl -ne 'print "$ARGV:$.: $_" if /[^\x00-\x7F]/; close ARGV if eof' $(git ls-files '*.ps1'))
+          if [ -n "$bad" ]; then
+            echo "$bad"
+            echo 'Non-ASCII bytes found: replace with ASCII or \uXXXX regex escapes'
+            exit 1
+          fi
+  pester:
+    name: pester (${{ matrix.ps }})
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - ps: '5.1'
+            exe: powershell
+          - ps: runner
+            exe: pwsh
+          - ps: 7.7.0-rc.1
+            preview: true
+    continue-on-error: ${{ matrix.preview == true }}
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Find the test files
+        id: tests
+        run: |
+          $files = @(git ls-files '*.Tests.ps1')
+          if (-not $files) { '::notice::No *.Tests.ps1 file in this repository, so Pester does not run.' }
+          "count=$($files.Count)" >> $env:GITHUB_OUTPUT
+      - name: Get PowerShell ${{ matrix.ps }}
+        if: steps.tests.outputs.count != '0'
+        env:
+          PS_EXE_NAME: ${{ matrix.exe }}
+          PS_VERSION: ${{ matrix.ps }}
+        run: |
+          if ($env:PS_EXE_NAME) {
+              $exe = (Get-Command $env:PS_EXE_NAME).Source
+          } else {
+              $base = "https://github.com/PowerShell/PowerShell/releases/download/v$env:PS_VERSION"
+              $name = "PowerShell-$env:PS_VERSION-win-x64.zip"
+              $zip = Join-Path $env:RUNNER_TEMP $name
+              Invoke-WebRequest "$base/$name" -OutFile $zip
+              $sums = Join-Path $env:RUNNER_TEMP 'hashes.sha256'
+              Invoke-WebRequest "$base/hashes.sha256" -OutFile $sums
+              $line = Get-Content $sums | Where-Object { $_ -like "* *$name" }
+              if ((Get-FileHash $zip).Hash -ne ($line -split ' ')[0]) { throw "sha256 mismatch for $name" }
+              $dir = Join-Path $env:RUNNER_TEMP 'pwsh'
+              Expand-Archive $zip $dir
+              $exe = Join-Path $dir 'pwsh.exe'
+          }
+          "PS_EXE=$exe" >> $env:GITHUB_ENV
+      - name: Run Pester under PowerShell ${{ matrix.ps }}
+        if: steps.tests.outputs.count != '0'
+        env:
+          PESTER_VERSION: '5.7.1'
+        run: |
+          & $env:PS_EXE -NoProfile -ExecutionPolicy Bypass -Command '$PSVersionTable.PSVersion.ToString(); Install-Module Pester -RequiredVersion $env:PESTER_VERSION -Force -Scope CurrentUser -SkipPublisherCheck; Import-Module Pester -RequiredVersion $env:PESTER_VERSION; Invoke-Pester -Path . -CI'
+          exit $LASTEXITCODE
+  release:
+    needs: [psanalyzer, ascii, pester]
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      SCRIPT: ${{ github.event.repository.name }}.ps1
+      CHANGELOG: CHANGELOG.md
+      NOTES: RELEASE_NOTES.md
+      SUMS: SHA256SUMS.txt
+      TAG_PREFIX: v
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check the Gallery key is passed
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: |
+          if [ -z "$NUGET_API_KEY" ]; then
+            echo "::error::NUGET_API_KEY is empty: the calling release workflow must pass it under secrets."
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0   # the previous tag, for the compare link in the notes
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: ${{ env.CENTRAL_DIR }}
+      - name: Release only from main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Run the release from main, not $GITHUB_REF_NAME."
+          exit 1
+      - name: Read the version from the newest CHANGELOG section
+        run: |
+          VERSION=$(awk '/^## \[/ && !/^## \[Unreleased\]/ { sub(/^## \[/, ""); sub(/\].*/, ""); print; exit }' "$CHANGELOG")
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::The newest section of $CHANGELOG must be '## [X.Y.Z] - YYYY-MM-DD', got '[$VERSION]'."
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "TAG=$TAG_PREFIX$VERSION" >> "$GITHUB_ENV"
+      - name: Check the version is not released yet
+        run: |
+          TAGGED=$(git rev-parse -q --verify "refs/tags/$TAG^{commit}" || true)
+          if [ -n "$TAGGED" ] && [ "$TAGGED" != "$GITHUB_SHA" ]; then
+            echo "::error::$TAG already points at $TAGGED, not at $GITHUB_SHA. If $VERSION is released, add a new $CHANGELOG section; a hand-pushed tag burns the version - release the next one."
+            exit 1
+          fi
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "::error::$TAG already has a GitHub release. If it is a draft left by a cancelled run, delete it and re-run; otherwise add a new $CHANGELOG section."
+            exit 1
+          fi
+      - name: Extract release notes from CHANGELOG
+        # Release notes are hand-written on purpose. `--generate-notes` lists
+        # merged PRs, and these repos land nearly everything as direct commits to
+        # main, so it produced a body holding nothing but a compare link.
+        run: |
+          awk -v ver="$VERSION" '
+            index($0, "## [" ver "]") == 1 { f = 1; next }
+            f && (/^## \[/ || /^\[[^]]+\]: /) { exit }
+            f { print }
+          ' "$CHANGELOG" > "$NOTES"
+          if ! grep -q '[^[:space:]]' "$NOTES"; then
+            echo "::error::The '## [$VERSION]' section of $CHANGELOG is empty."
+            exit 1
+          fi
+          PREV=$(git describe --tags --abbrev=0 --match "${TAG_PREFIX}[0-9]*" "$GITHUB_SHA^")
+          COMPARE="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/$PREV...$TAG"
+          if ! grep -qxF "[$VERSION]: $COMPARE" "$CHANGELOG"; then
+            echo "::error::$CHANGELOG has no '[$VERSION]: $COMPARE' link at the bottom."
+            exit 1
+          fi
+          printf '\n**Full Changelog**: %s\n' "$COMPARE" >> "$NOTES"
+      - name: Stamp the version into PSScriptInfo
+        run: |
+          sed -i "s/^\.VERSION .*/.VERSION $VERSION/" "$SCRIPT"
+          if [ "$(grep -c '^\.VERSION ' "$SCRIPT")" != 1 ] || ! grep -qxF ".VERSION $VERSION" "$SCRIPT"; then
+            echo "::error::$SCRIPT must hold exactly one .VERSION line, and after the stamp it must read '.VERSION $VERSION'."
+            exit 1
+          fi
+      - name: Compute checksums
+        run: sha256sum "$SCRIPT" > "$SUMS"
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ env.SCRIPT }}
+      - name: Publish to PowerShell Gallery
+        # Before the GitHub release on purpose: the Gallery API key expires
+        # (365 days at most) and this is the step that fails when it does. Failing
+        # here leaves nothing published - rotate the calling repository's
+        # NUGET_API_KEY and re-run the job. The other order left a release behind
+        # that the re-run then tripped over.
+        shell: pwsh
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: |
+          . "./$env:CENTRAL_DIR/.github/Publish-GalleryScript.ps1"
+          Publish-GalleryScript -Path $env:SCRIPT -Version $env:VERSION -NuGetApiKey $env:NUGET_API_KEY
+      - name: Create release
+        # --title: without it the release has no name and GitHub shows the
+        # tagged commit's subject next to the tag instead.
+        run: gh release create "$TAG" --target "$GITHUB_SHA" --title "$TAG" --notes-file "$NOTES" "$SCRIPT" "$SUMS"
