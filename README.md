@@ -19,3 +19,7 @@ A change here reaches a repository only when its pin moves. Release a version he
 (`gh release create vX.Y.Z --target <commit> --title vX.Y.Z --notes "<what changed>"`), then bump the SHA in
 both workflows of each repository together - lint fails while they differ; Dependabot proposes the bump
 monthly. Do not rename this repository: every caller would break.
+
+## License
+
+[MIT](LICENSE).
