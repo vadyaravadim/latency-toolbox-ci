@@ -36,13 +36,13 @@ pin - move it by hand: to the final release when it ships, and once `windows-lat
 version, on to the next preview, or drop the leg if there is none.
 
 **The ruleset "main" of this repo and of each script repo requires `ci / psanalyzer`, `ci / ascii`,
-`ci / pester (5.1)` and `ci / pester (runner)` from GitHub Actions on the pushed commit itself, so `main`
-takes only a commit whose `ci` passed on a branch first.** A name is the caller's job `ci` plus a job here,
-the Pester one from its `name:` and the leg's `ps`. Renaming one of them makes every push to `main` fail
-until the ruleset lists the new name: swap it in this repo's ruleset right before pushing the rename here,
-and in each script repo's right before pushing its pin bump. A new blocking job or leg gates nothing until
-it is added to all seven rulesets. The preview leg stays out: it is red without blocking, and its name
-moves with its pin.
+`ci / pester (5.1)` and `ci / pester (runner)` from GitHub Actions before `main` moves.** A commit made on
+`main` itself is rejected; a branch whose `ci` passed and that is up to date with `main` can be merged, a
+local `--no-ff` merge included. A name is the caller's job `ci` plus a job here, the Pester one from its
+`name:` and the leg's `ps`. Renaming one of them makes every push to `main` fail until the ruleset lists the
+new name: swap it in this repo's ruleset right before pushing the rename here, and in each script repo's
+right before pushing its pin bump. A new blocking job or leg gates nothing until it is added to all seven
+rulesets. The preview leg stays out: it is red without blocking, and its name moves with its pin.
 
 **Release a version here only after `ci` is green on that commit AND a script repo branch pinned to it has
 passed `ci` and a branch dispatch of its `release.yml` reached "Release only from main".** Then
