@@ -31,7 +31,8 @@ In scope:
 - A way to make a release tag, publish or attest a file that does not match the
   tagged source of the calling repository
 - A way to run the release job without its gates passing on the same commit
-- Exposing `NUGET_API_KEY` or a write token to a push or pull_request run
+- Exposing `NUGET_API_KEY` or a write token to a push or pull_request run, or the key to a release run from a
+  branch other than `main`
 - Checksums, provenance or the PowerShell Gallery package not matching the tagged
   source
 

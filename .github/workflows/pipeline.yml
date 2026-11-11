@@ -12,10 +12,13 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     env:
       PSSA_SETTINGS: PSScriptAnalyzerSettings.psd1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Get PSScriptAnalyzer
         shell: pwsh
         env:
@@ -46,6 +49,7 @@ jobs:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
           path: ${{ env.CENTRAL_DIR }}
+          persist-credentials: false
       - name: Compare the PSScriptAnalyzer settings with the family file
         env:
           CENTRAL_REPO: ${{ job.workflow_repository }}
@@ -70,8 +74,11 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - run: |
           bad=$(perl -ne 'print "$ARGV:$.: $_" if /[^\x00-\x7F]/; close ARGV if eof' $(git ls-files '*.ps1'))
           if [ -n "$bad" ]; then
@@ -93,8 +100,10 @@ jobs:
             exe: pwsh
           - ps: 7.7.0-rc.1
             preview: true
+            sha256: 2bb33156e2acefe127a9a5e88583aec9835ee005a215c68280e346b6ebb44182
     continue-on-error: ${{ matrix.preview == true }}
     runs-on: windows-latest
+    timeout-minutes: 20
     defaults:
       run:
         shell: pwsh
@@ -102,6 +111,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Find the test files
         id: tests
         run: |
@@ -113,6 +123,7 @@ jobs:
         env:
           PS_EXE_NAME: ${{ matrix.exe }}
           PS_VERSION: ${{ matrix.ps }}
+          PS_SHA256: ${{ matrix.sha256 }}
         run: |
           if ($env:PS_EXE_NAME) {
               $exe = (Get-Command $env:PS_EXE_NAME).Source
@@ -121,10 +132,7 @@ jobs:
               $name = "PowerShell-$env:PS_VERSION-win-x64.zip"
               $zip = Join-Path $env:RUNNER_TEMP $name
               Invoke-WebRequest "$base/$name" -OutFile $zip
-              $sums = Join-Path $env:RUNNER_TEMP 'hashes.sha256'
-              Invoke-WebRequest "$base/hashes.sha256" -OutFile $sums
-              $line = Get-Content $sums | Where-Object { $_ -like "* *$name" }
-              if ((Get-FileHash $zip).Hash -ne ($line -split ' ')[0]) { throw "sha256 mismatch for $name" }
+              if ((Get-FileHash $zip).Hash -ne $env:PS_SHA256) { throw "sha256 mismatch for $name" }
               $dir = Join-Path $env:RUNNER_TEMP 'pwsh'
               Expand-Archive $zip $dir
               $exe = Join-Path $dir 'pwsh.exe'
@@ -145,36 +153,50 @@ jobs:
   release:
     needs: [psanalyzer, ascii, pester]
     if: github.event_name == 'workflow_dispatch'
+    environment: release
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       SCRIPT: ${{ github.event.repository.name }}.ps1
       CHANGELOG: CHANGELOG.md
       NOTES: RELEASE_NOTES.md
       SUMS: SHA256SUMS.txt
       TAG_PREFIX: v
-      GH_TOKEN: ${{ github.token }}
+      PROVENANCE: ${{ github.event.repository.name }}.ps1.sigstore.json
     steps:
       - name: Check the Gallery key is passed
         env:
           NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
         run: |
           if [ -z "$NUGET_API_KEY" ]; then
-            echo "::error::NUGET_API_KEY is empty: the calling release workflow must pass it under secrets."
+            echo "::error::NUGET_API_KEY is empty: the calling release workflow must pass it under secrets, and the repository's release environment must hold it."
             exit 1
           fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0   # the previous tag, for the compare link in the notes
+          persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
           path: ${{ env.CENTRAL_DIR }}
+          persist-credentials: false
       - name: Release only from main
         if: github.ref != 'refs/heads/main'
         run: |
           echo "::error::Run the release from main, not $GITHUB_REF_NAME."
           exit 1
+      - name: Get PowerShellGet
+        shell: pwsh
+        env:
+          MODULE_NAME: PowerShellGet
+          MODULE_VERSION: '2.2.5'
+          MODULE_SHA512: 'Wkr3qmG2/w9Envo4To1EzXiZ1YZRWvnPe6JmwmpiWr8zwMDb4NR2zReYCvOaXHZNTKci51K+wD7UeKc6ODl8PA=='
+        run: *get_gallery_module
+      - name: Load the pinned PowerShellGet
+        shell: pwsh
+        run: (Import-Module $env:MODULE_PSD1 -PassThru).Version.ToString()
       - name: Read the version from the newest CHANGELOG section
         run: |
           VERSION=$(awk '/^## \[/ && !/^## \[Unreleased\]/ { sub(/^## \[/, ""); sub(/\].*/, ""); print; exit }' "$CHANGELOG")
@@ -185,10 +207,17 @@ jobs:
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "TAG=$TAG_PREFIX$VERSION" >> "$GITHUB_ENV"
       - name: Check the version is not released yet
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           TAGGED=$(git rev-parse -q --verify "refs/tags/$TAG^{commit}" || true)
           if [ -n "$TAGGED" ] && [ "$TAGGED" != "$GITHUB_SHA" ]; then
             echo "::error::$TAG already points at $TAGGED, not at $GITHUB_SHA. If $VERSION is released, add a new $CHANGELOG section; a hand-pushed tag burns the version - release the next one."
+            exit 1
+          fi
+          HIGHEST=$(git tag --list "${TAG_PREFIX}[0-9]*" | sort -V | tail -n 1)
+          if [ -n "$HIGHEST" ] && [ "$(printf '%s\n' "$HIGHEST" "$TAG" | sort -V | tail -n 1)" != "$TAG" ]; then
+            echo "::error::$TAG is lower than $HIGHEST, the highest released version: the newest $CHANGELOG section needs a higher one."
             exit 1
           fi
           if VIEW=$(gh release view "$TAG" 2>&1); then
@@ -229,22 +258,30 @@ jobs:
       - name: Compute checksums
         run: sha256sum "$SCRIPT" > "$SUMS"
       - name: Attest build provenance
+        id: attest
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: ${{ env.SCRIPT }}
+      - name: Name the provenance bundle after the script
+        env:
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: cp "$BUNDLE" "$PROVENANCE"
       - name: Publish to PowerShell Gallery
         # Before the GitHub release on purpose: the Gallery API key expires
         # (365 days at most) and this is the step that fails when it does. Failing
-        # here leaves nothing published - rotate the calling repository's
-        # NUGET_API_KEY and re-run the job. The other order left a release behind
-        # that the re-run then tripped over.
+        # here leaves nothing published - rotate NUGET_API_KEY in the calling
+        # repository's release environment and re-run the job. The other order left
+        # a release behind that the re-run then tripped over.
         shell: pwsh
         env:
           NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
         run: |
+          Import-Module $env:MODULE_PSD1
           . "./$env:CENTRAL_DIR/.github/Publish-GalleryScript.ps1"
           Publish-GalleryScript -Path $env:SCRIPT -Version $env:VERSION -NuGetApiKey $env:NUGET_API_KEY
       - name: Create release
         # --title: without it the release has no name and GitHub shows the
         # tagged commit's subject next to the tag instead.
-        run: gh release create "$TAG" --target "$GITHUB_SHA" --title "$TAG" --notes-file "$NOTES" "$SCRIPT" "$SUMS"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$TAG" --target "$GITHUB_SHA" --title "$TAG" --notes-file "$NOTES" "$SCRIPT" "$SUMS" "$PROVENANCE"

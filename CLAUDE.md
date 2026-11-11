@@ -1,5 +1,8 @@
 # latency-toolbox-ci
 
+Maintainer notes for Claude Code and the maintainer. Contributors start with
+[CONTRIBUTING.md](https://github.com/vadyaravadim/.github/blob/main/CONTRIBUTING.md).
+
 The shared CI and release pipeline of the six RigPolice Latency Toolbox scripts (cpu-parking-disabler,
 msi-mode-utility, remove-hidden-devices, gamedvr-fso-disabler, timer-resolution-utility,
 interrupt-affinity-utility). Each calls `.github/workflows/pipeline.yml` from two thin workflows: `ci.yml`
@@ -15,6 +18,13 @@ mapping fail before anything is written.
 
 **The `release` job declares no `permissions`: it takes the caller's grant.** A job that asks for more than
 the caller grants fails the run at startup, and the docs do not exempt a job skipped by `if`.
+
+**The `release` job runs in the calling repository's `release` environment, which only `main` may use.** Each
+script repo keeps `NUGET_API_KEY` there and no repository secret of that name; `release.yml` still passes it
+by name. A dispatch from any other branch fails at the environment before the first step, so "Release only
+from main" is the backstop for a repo whose environment is missing (a run creates a missing environment
+without rules). Create the environment in every new caller with the custom branch policy `main` and with
+"Allow administrators to bypass configured protection rules" unticked.
 
 **The Pester job skips at step level when the repo has no `*.Tests.ps1`, never at job level.** A skipped job
 would skip the release too (`needs:`). Pester itself exits 1 on zero test files.
@@ -32,8 +42,9 @@ Lint also fails unless every call of this repo in the caller's workflows pins th
 `ci.yml` and `release.yml` are bumped together; Dependabot proposes it monthly.
 
 **The Pester preview leg (`7.7.0-rc.1`) is `continue-on-error`: red without blocking.** Nothing bumps that
-pin - move it by hand: to the final release when it ships, and once `windows-latest` itself ships that
-version, on to the next preview, or drop the leg if there is none.
+pin - move it by hand, with its `sha256` (the zip's digest on its release page): to the final release when
+it ships, and once `windows-latest` itself ships that version, on to the next preview, or drop the leg if
+there is none.
 
 **PSScriptAnalyzer and Pester come from their PowerShell Gallery packages, checked against a pinned SHA512
 and imported by path - never `Install-Module`.** One script does it: the `run:` of "Get PSScriptAnalyzer" is
@@ -46,7 +57,10 @@ Pester 3.4.0 (built into 5.1) and the runner image's own copies; `Install-Module
 median 106 s per run. The download retries 3 times, 20 s apart, and `-Verbose` logs each retry: during a burst
 of reruns on 2026-11-10 the Gallery's Azure Front Door answered `The request is blocked.` to 3 of ~24
 downloads while runners in the same minute got through. Whether a retry outlasts such a block is not proven
-yet - the first retry line in a log will tell.
+yet - the first retry line in a log will tell. The release job's "Get PowerShellGet" is a third alias: the
+publish step imports that PowerShellGet (2.2.5, the version PowerShell 7.6 bundles) by path, and "Load the
+pinned PowerShellGet" imports it once before anything is written, so a dispatch on `main` proves it;
+PackageManagement still comes from the image's PowerShell.
 
 **The ruleset "main" of this repo and of each script repo requires `ci / psanalyzer`, `ci / ascii`,
 `ci / pester (5.1)` and `ci / pester (runner)` from GitHub Actions before `main` moves.** A commit made on
@@ -58,9 +72,13 @@ right before pushing its pin bump. A new blocking job or leg gates nothing until
 rulesets. The preview leg stays out: it is red without blocking, and its name moves with its pin.
 
 **Release a version here only after `ci` is green on that commit AND a script repo branch pinned to it has
-passed `ci` and a branch dispatch of its `release.yml` reached "Release only from main".** Then
-`gh release create vX.Y.Z --target <sha> --title vX.Y.Z --notes "<what changed>"`. Tags are immutable (tag
-ruleset plus immutable releases): a mistake is fixed by the next version, never a retag.
+passed `ci` and a branch dispatch of its `release.yml` failed at the `release` environment ("is not allowed to
+deploy to release") with every gate job green.** Merge the branch into `main` with `--ff-only`, so the tag
+lands on the probed commit, then `gh release create vX.Y.Z --target <sha> --title vX.Y.Z --notes-file <its
+CHANGELOG.md section>`. After each pin bump a dispatch on `main` must stop at "Check the version is not
+released yet" - only while that repo's newest CHANGELOG section is already released; otherwise that dispatch
+is a real release. Tags are immutable (tag ruleset plus immutable releases): a mistake is fixed by the next
+version, never a retag.
 
 **Never rename or delete this repository.** GitHub does not redirect a renamed reusable workflow, so every
 caller breaks.
