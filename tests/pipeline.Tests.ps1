@@ -43,7 +43,7 @@ BeforeAll {
         param([string[]]$Tags, [string]$Version, [bool]$TagAtHead)
         $repo = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $repo | Out-Null
-        $saved = @{ VERSION = $env:VERSION; TAG = $env:TAG; GITHUB_SHA = $env:GITHUB_SHA }
+        $saved = @{ VERSION = $env:VERSION; TAG = $env:TAG; GITHUB_SHA = $env:GITHUB_SHA; TAG_PREFIX = $env:TAG_PREFIX }
         Push-Location $repo
         try {
             git -c init.defaultBranch=main init -q
@@ -53,6 +53,7 @@ BeforeAll {
             if ($TagAtHead) { git tag "v$Version" }
             $env:VERSION = $Version
             $env:TAG = "v$Version"
+            $env:TAG_PREFIX = 'v'
             $env:GITHUB_SHA = (git rev-parse HEAD)
             $checkFile = Join-Path $repo 'check.sh'
             $text = "gh() { echo 'release not found'; return 1; }`n" + (Get-StepRunScript 'Check the version is not released yet') + "`n"
@@ -79,5 +80,44 @@ Describe 'release job: the version check' {
             $result.ExitCode | Should -Not -Be 0 -Because $result.Output
             if ($Highest) { $result.Output | Should -Match ([regex]::Escape($Highest)) }
         }
+    }
+}
+
+Describe 'release job: GH_TOKEN' {
+    It 'gives GH_TOKEN only to the release steps that call gh' {
+        $lines = @(Get-Content -LiteralPath $pipelinePath)
+        $jobAt = [array]::IndexOf($lines, '  release:')
+        $jobAt | Should -BeGreaterThan -1
+        $jobEnd = $lines.Count
+        for ($i = $jobAt + 1; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match '^  \S') { $jobEnd = $i; break }
+        }
+        $jobEnv = [System.Collections.Generic.List[string]]::new()
+        $steps = [System.Collections.Generic.List[object]]::new()
+        $inEnv = $false
+        $inSteps = $false
+        for ($i = $jobAt + 1; $i -lt $jobEnd; $i++) {
+            $line = $lines[$i]
+            if ($line -match '^    steps:\s*$') { $inEnv = $false; $inSteps = $true; continue }
+            if ($line -match '^    env:\s*$') { $inEnv = $true; continue }
+            if ($line -match '^    \S') { $inEnv = $false; $inSteps = $false; continue }
+            if ($inEnv) { $jobEnv.Add($line) }
+            elseif ($inSteps) {
+                if ($line -match '^      - (name|uses):') { $steps.Add([System.Collections.Generic.List[string]]::new()) }
+                if ($steps.Count -gt 0) { $steps[$steps.Count - 1].Add($line) }
+            }
+        }
+        $steps.Count | Should -BeGreaterThan 0
+        $wrong = [System.Collections.Generic.List[string]]::new()
+        if ($jobEnv -match 'GH_TOKEN') { $wrong.Add('the job-level env holds GH_TOKEN') }
+        foreach ($step in $steps) {
+            $text = $step -join "`n"
+            $label = $step[0].Trim()
+            $callsGh = $text -match '\bgh (release|api)\b'
+            $hasToken = $step -contains '          GH_TOKEN: ${{ github.token }}'
+            if ($callsGh -and -not $hasToken) { $wrong.Add("step '$label' calls gh but has no step-level GH_TOKEN") }
+            if (-not $callsGh -and $text -match 'GH_TOKEN') { $wrong.Add("step '$label' has GH_TOKEN but does not call gh release or gh api") }
+        }
+        $wrong.Count | Should -Be 0 -Because ($wrong -join '; ')
     }
 }
