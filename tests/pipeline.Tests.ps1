@@ -13,7 +13,9 @@ BeforeDiscovery {
 
 BeforeAll {
     $script:pipelinePath = Join-Path $PSScriptRoot '..\.github\workflows\pipeline.yml'
-    $script:bash = if ($env:OS -eq 'Windows_NT') { Join-Path $env:ProgramFiles 'Git\bin\bash.exe' } else { (Get-Command bash).Source }
+    # Git for Windows' own bash, wherever Git is installed (git --exec-path is
+    # <Git>\mingw64\libexec\git-core); the bash.exe in System32 is WSL's.
+    $script:bash = if ($env:OS -eq 'Windows_NT') { [IO.Path]::GetFullPath((Join-Path (git --exec-path) '..\..\..\bin\bash.exe')) } else { (Get-Command bash).Source }
 
     function Get-StepRunScript {
         param([string]$StepName)
@@ -43,9 +45,13 @@ BeforeAll {
         param([string[]]$Tags, [string]$Version, [bool]$TagAtHead)
         $repo = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $repo | Out-Null
-        $saved = @{ VERSION = $env:VERSION; TAG = $env:TAG; GITHUB_SHA = $env:GITHUB_SHA; TAG_PREFIX = $env:TAG_PREFIX }
+        $saved = @{ VERSION = $env:VERSION; TAG = $env:TAG; GITHUB_SHA = $env:GITHUB_SHA; TAG_PREFIX = $env:TAG_PREFIX; GIT_CONFIG_GLOBAL = $env:GIT_CONFIG_GLOBAL }
         Push-Location $repo
         try {
+            # No global git config, as on GitHub's runner: a contributor's own
+            # (commit.gpgSign, tag.gpgSign, hooks) would change what git does here.
+            $env:GIT_CONFIG_GLOBAL = Join-Path $TestDrive 'empty.gitconfig'
+            New-Item -ItemType File -Path $env:GIT_CONFIG_GLOBAL -Force | Out-Null
             git -c init.defaultBranch=main init -q
             git -c user.name=test -c user.email=test@example.com commit -q --allow-empty -m first
             foreach ($tag in $Tags) { git tag $tag }
@@ -59,7 +65,8 @@ BeforeAll {
             $text = "gh() { echo 'release not found'; return 1; }`n" + (Get-StepRunScript 'Check the version is not released yet') + "`n"
             [System.IO.File]::WriteAllText($checkFile, $text)
             $ErrorActionPreference = 'Continue'
-            $output = & $bash ($checkFile -replace '\\', '/') 2>&1 | Out-String
+            # bash -e: how GitHub runs a step that names no shell on ubuntu-latest.
+            $output = & $bash -e ($checkFile -replace '\\', '/') 2>&1 | Out-String
             [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = $output }
         } finally {
             Pop-Location
