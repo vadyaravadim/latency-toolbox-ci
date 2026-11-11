@@ -23,8 +23,10 @@ the caller grants fails the run at startup, and the docs do not exempt a job ski
 script repo keeps `NUGET_API_KEY` there and no repository secret of that name; `release.yml` still passes it
 by name. A dispatch from any other branch fails at the environment before the first step, so "Release only
 from main" is the backstop for a repo whose environment is missing (a run creates a missing environment
-without rules). Create the environment in every new caller with the custom branch policy `main` and with
-"Allow administrators to bypass configured protection rules" unticked.
+without rules). Create the environment in every new caller with the custom branch policy `main`. The policy
+binds administrators too: "Allow administrators to bypass configured protection rules" only lets an admin start
+a job that waits for a reviewer or a wait timer, and these environments have neither, so the box stays at its
+default. Untick it if a reviewer or a timer is ever added.
 
 **The Pester job skips at step level when the repo has no `*.Tests.ps1`, never at job level.** A skipped job
 would skip the release too (`needs:`). Pester itself exits 1 on zero test files.
