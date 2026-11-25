@@ -1,6 +1,6 @@
 # latency-toolbox-ci
 
-Maintainer notes for Claude Code and the maintainer. Contributors start with
+Maintainer notes for coding agents and the maintainer. Contributors start with
 [CONTRIBUTING.md](https://github.com/vadyaravadim/.github/blob/main/CONTRIBUTING.md).
 
 The shared CI and release pipeline of the six RigPolice Latency Toolbox scripts (cpu-parking-disabler,
